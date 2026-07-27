@@ -14,6 +14,23 @@ _client = ollama.Client(host=OLLAMA_HOST)
 
 FOLLOW_UP_MAX_WORDS = 8
 
+# Exact-match fast path for trivial greetings/chitchat: on this CPU-only setup
+# a single Ollama call takes ~10-15s, and the greeting path normally makes two
+# (classify intent, then generate a reply) — so a plain "hi" was taking ~20s+.
+# Common cases get an instant canned reply instead of paying for either call;
+# anything not matched here still falls through to the full LLM-based path.
+QUICK_GREETING_REPLIES = {
+    "hi": "Hi there! Ask me anything about HTML/CSS, JavaScript, React, Node.js, or Drupal.",
+    "hii": "Hi there! Ask me anything about HTML/CSS, JavaScript, React, Node.js, or Drupal.",
+    "hello": "Hello! Ask me anything about HTML/CSS, JavaScript, React, Node.js, or Drupal.",
+    "hey": "Hey! Ask me anything about HTML/CSS, JavaScript, React, Node.js, or Drupal.",
+    "thanks": "You're welcome!",
+    "thank you": "You're welcome!",
+    "ok": "Sounds good — let me know if you have any questions.",
+    "okay": "Sounds good — let me know if you have any questions.",
+    "bye": "Bye! Come back anytime you have a web dev question.",
+}
+
 INTENT_SYSTEM_PROMPT = """You are a routing assistant. Classify the user's latest message \
 into exactly one of these intents:
 - "greeting": a hello/hi/greeting with no real question.
@@ -146,6 +163,10 @@ class ChatSession:
         rejection = input_guardrail(user_message)
         if rejection:
             return ChatAnswer(answer=rejection, used_tool=False, sources=[])
+
+        quick_reply = QUICK_GREETING_REPLIES.get(user_message.strip().lower().rstrip("!."))
+        if quick_reply:
+            return self._finish(user_message, ChatAnswer(answer=quick_reply, used_tool=False, sources=[]))
 
         route = self._classify_intent(user_message)
         intent = route.get("intent", "question")

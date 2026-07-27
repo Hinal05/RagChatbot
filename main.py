@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from app.chat import ChatSession
 
-app = FastAPI(title="Drupal RAG Chatbot")
+app = FastAPI(title="Web Dev RAG Chatbot")
 
 SESSION_MAX_AGE_SECONDS = 30 * 60
 
@@ -61,7 +61,7 @@ def home():
 <!DOCTYPE html>
 <html>
 <head>
-<title>Drupal RAG Chatbot</title>
+<title>Web Dev RAG Chatbot</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -187,11 +187,11 @@ def home():
 </style>
 </head>
 <body>
-  <h2>Drupal RAG Chatbot</h2>
-  <div class="subtitle">Ask about Drupal coding standards, security, or performance &mdash; or check the weather.</div>
+  <h2>Web Dev RAG Chatbot</h2>
+  <div class="subtitle">Ask about HTML/CSS, JavaScript, React, Node.js, or Drupal &mdash; or check the weather.</div>
   <div id="log"></div>
   <div id="input-row">
-    <input id="q" placeholder="Ask about Drupal coding standards, security, performance... or weather in a city" />
+    <input id="q" placeholder="Ask about HTML/CSS, JavaScript, React, Node.js, Drupal... or weather in a city" />
     <button onclick="send()">Send</button>
   </div>
 <script>

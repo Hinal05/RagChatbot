@@ -62,32 +62,7 @@ in front of stored document text (see `app/embeddings.py`). This isn't a bug —
 it's just how this particular model was trained to work, and skipping it
 makes search results noticeably worse.
 
-## Step 2: The knowledge base (what the chatbot actually knows)
-
-### The dataset
-
-**Domain: Web Development.** `data/knowledge_base.json` holds **110 short,
-hand-written facts across 5 sub-categories** — `html_css`, `javascript`,
-`react`, `nodejs`, and `drupal` (22 entries each). Each entry is a
-self-contained fact or best practice, 1-4 sentences long, tagged with a
-`category` field, e.g.:
-
-```json
-{"id": "react_005", "category": "react", "text": "The useEffect hook runs side effects..."}
-```
-
-We chose these 5 categories because they're genuinely different
-technologies, not just different tones of writing about the same thing —
-HTML/CSS (markup and styling), JavaScript (core language), React
-(component-based UI), Node.js (server-side JS), and Drupal (a full CMS
-built on PHP) each have their own concerns, conventions, and vocabulary,
-which is a more meaningful kind of diversity than just varying the writing
-style of one topic. Weather is deliberately **not** a category here — it's
-handled entirely by the live tool in Step 7, so retrieval (searching stored
-facts) and the live action (calling an API) stay clearly separate from each
-other.
-
-### Chunking strategy
+## Step 2: Document Chunking Strategy
 
 Splitting text into pieces ("chunks") is necessary because embedding
 models and LLMs have a limited number of tokens they can read at once —
@@ -115,18 +90,39 @@ hybrid is a deliberate, documented tradeoff: simplicity and speed for the
 common case (short entries), with the more careful sliding-window approach
 reserved for the rare long one.
 
-### Where it's stored
+## Step 3: Dataset Creation & Curation
 
-[Chroma](https://www.trychroma.com/), a simple local database for searching
-by meaning rather than exact words, saved on your computer in `chroma_db/`.
-Every chunk carries its `category` and originating entry `id` as metadata,
-so retrieval results can always be traced back to a specific category and
-fact. We picked Chroma over a cloud service like Pinecone because it needs
-no sign-up, no internet, and no cost — a good fit for a small personal
-project. If we ever wanted to move to a cloud database, only
-`app/retriever.py` would need to change.
+**Domain: Web Development.** `data/knowledge_base.json` holds **110 short,
+hand-written facts across 5 sub-categories** — `html_css`, `javascript`,
+`react`, `nodejs`, and `drupal` (22 entries each). Each entry is a
+self-contained fact or best practice, 1-4 sentences long, tagged with a
+`category` field, e.g.:
 
-## Step 3: How a conversation actually works
+```json
+{"id": "react_005", "category": "react", "text": "The useEffect hook runs side effects..."}
+```
+
+We chose these 5 categories because they're genuinely different
+technologies, not just different tones of writing about the same thing —
+HTML/CSS (markup and styling), JavaScript (core language), React
+(component-based UI), Node.js (server-side JS), and Drupal (a full CMS
+built on PHP) each have their own concerns, conventions, and vocabulary,
+which is a more meaningful kind of diversity than just varying the writing
+style of one topic. Weather is deliberately **not** a category here — it's
+handled entirely by the live tool (see the chat engine section below), so
+retrieval (searching stored facts) and the live action (calling an API)
+stay clearly separate from each other.
+
+**Where it's stored**: [Chroma](https://www.trychroma.com/), a simple local
+database for searching by meaning rather than exact words, saved on your
+computer in `chroma_db/`. Every chunk carries its `category` and
+originating entry `id` as metadata, so retrieval results can always be
+traced back to a specific category and fact. We picked Chroma over a cloud
+service like Pinecone because it needs no sign-up, no internet, and no
+cost — a good fit for a small personal project. If we ever wanted to move
+to a cloud database, only `app/retriever.py` would need to change.
+
+## The Chat Engine (Multi-Turn Conversations & Guardrails)
 
 Here's what happens, step by step, every time you send a message
 (all of this lives in `app/chat.py`'s `ChatSession` class):

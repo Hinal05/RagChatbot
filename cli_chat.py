@@ -6,7 +6,7 @@ from app.chat import ChatSession
 
 
 def main():
-    print("Drupal RAG Chatbot (type 'exit' to quit)\n")
+    print("Web Dev RAG Chatbot (type 'exit' to quit)\n")
     session = ChatSession()
     while True:
         user_message = input("You: ").strip()

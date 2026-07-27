@@ -1,9 +1,10 @@
-# Drupal RAG Chatbot
+# Web Development RAG Chatbot
 
-A chatbot that answers Drupal developer questions using its own small knowledge
-base, and can also check the live weather. It runs a multi-turn conversation
-(it remembers earlier messages), and it double-checks its own answers before
-showing them to you.
+A chatbot that answers web development questions — HTML/CSS, JavaScript,
+React, Node.js, and Drupal — using its own curated knowledge base, and can
+also check the live weather. It runs a multi-turn conversation (it remembers
+earlier messages), and it double-checks its own answers before showing them
+to you.
 
 "RAG" stands for **Retrieval-Augmented Generation** — instead of only relying
 on what the AI model already knows, the app first looks up relevant text from
@@ -14,8 +15,8 @@ retraining any model.
 ## How it all fits together
 
 ```
-data/*.md               →  app/ingest.py   →  chroma_db/ (a local search database)
-                                                    ↑
+data/knowledge_base.json →  app/chunking.py  →  app/ingest.py  →  chroma_db/ (a local search database)
+                                                                       ↑
 your question  →  app/chat.py  →  app/retriever.py (finds the most relevant text)
                         │
                         ├─ app/tools.py (checks the weather, only when needed)
@@ -42,12 +43,18 @@ actual answers.
 **Model chosen: `intfloat/e5-base-v2`** (runs locally on your computer, no
 internet or account needed).
 
+We picked this from the [MTEB leaderboard](https://huggingface.co/blog/mteb),
+Hugging Face's public benchmark that scores embedding models across 56
+datasets and up to 112 languages, so models can be compared on the same
+scale rather than by marketing claims.
+
 | What we cared about | Why this model works |
 |---|---|
-| Accuracy | It scores well on MTEB (a public leaderboard that ranks these models), clearly better than older, simpler options like `all-MiniLM-L6-v2`. |
-| Language | It's built for English, which matches our documents (Drupal developer docs written in English). If we ever needed multiple languages, `intfloat/multilingual-e5-base` is the equivalent model for that. |
-| Speed & size | About 0.4GB — small enough to run comfortably on a normal computer, no graphics card required. |
-| Other options considered | OpenAI's `text-embedding-ada-002` is easier to set up (just an API call) but costs money per use and needs an internet connection — we skipped it to keep this project free and fully offline. We also considered `all-MiniLM-L6-v2` (smaller and faster) but it's noticeably less accurate, and our chosen model is already fast enough. |
+| Accuracy | Scores well on MTEB's retrieval average, clearly ahead of older, simpler options like `all-MiniLM-L6-v2`. We treated the MTEB score as a starting filter, not the final word — [Pinecone's embedding model guide](https://www.pinecone.io/learn/series/rag/embedding-models-rundown/) points out that some open-source models are effectively fine-tuned on the MTEB test sets themselves, which can inflate their leaderboard numbers, so real usage still matters more than the number alone. |
+| Language | Built for English, which matches our knowledge base (web development reference content written in English). If we ever needed multiple languages, `intfloat/multilingual-e5-base` is the equivalent model for that. |
+| Sequence length | Supports up to 512 tokens per chunk, which the same Pinecone guide notes is "usually more than enough" for typical retrieval chunks — comfortably covers our ~500-word chunk size (see Step 2). |
+| Speed & size | About 0.4GB — small enough to run comfortably on a normal computer, no graphics card required. Pinecone's own side-by-side timing test found E5 embedded its test set in about 3 minutes 53 seconds, faster than Cohere's model (5:32) and OpenAI's `text-embedding-ada-002` (9:07) in their comparison — and confirms E5 doesn't strictly need a GPU, CPU-only is fine, just slower. |
+| Other options considered | OpenAI's `text-embedding-ada-002` is easier to set up (just an API call) but costs money per use, needs an internet connection, and produces larger 1536-dimension vectors (more storage) — we skipped it to keep this project free, offline, and lightweight to store. We also considered `all-MiniLM-L6-v2` (smaller and faster) but it's noticeably less accurate, and E5 is already fast enough on CPU that the speed difference isn't worth the accuracy tradeoff. |
 
 One quirk to know about: this model expects a small label added to text
 before comparing it — `"query: "` in front of your question, and `"passage: "`
@@ -57,20 +64,67 @@ makes search results noticeably worse.
 
 ## Step 2: The knowledge base (what the chatbot actually knows)
 
-- **The documents**: `data/*.md` — four short files we wrote ourselves,
-  covering Drupal coding standards, module development, security practices,
-  and performance tips. We kept this small on purpose, so it's easy to check
-  by hand whether an answer is actually correct.
-- **Chunking**: long documents get cut into smaller pieces (about 500 words
-  each, with some overlap between pieces so we don't accidentally cut a
-  sentence in half) — see `app/ingest.py`. Each piece remembers which file it
-  came from.
-- **Where it's stored**: [Chroma](https://www.trychroma.com/), a simple
-  local database for searching by meaning rather than exact words, saved on
-  your computer in `chroma_db/`. We picked this over a cloud service like
-  Pinecone because it needs no sign-up, no internet, and no cost — a good
-  fit for a small personal project. If we ever wanted to move to a cloud
-  database, only `app/retriever.py` would need to change.
+### The dataset
+
+**Domain: Web Development.** `data/knowledge_base.json` holds **110 short,
+hand-written facts across 5 sub-categories** — `html_css`, `javascript`,
+`react`, `nodejs`, and `drupal` (22 entries each). Each entry is a
+self-contained fact or best practice, 1-4 sentences long, tagged with a
+`category` field, e.g.:
+
+```json
+{"id": "react_005", "category": "react", "text": "The useEffect hook runs side effects..."}
+```
+
+We chose these 5 categories because they're genuinely different
+technologies, not just different tones of writing about the same thing —
+HTML/CSS (markup and styling), JavaScript (core language), React
+(component-based UI), Node.js (server-side JS), and Drupal (a full CMS
+built on PHP) each have their own concerns, conventions, and vocabulary,
+which is a more meaningful kind of diversity than just varying the writing
+style of one topic. Weather is deliberately **not** a category here — it's
+handled entirely by the live tool in Step 7, so retrieval (searching stored
+facts) and the live action (calling an API) stay clearly separate from each
+other.
+
+### Chunking strategy
+
+Splitting text into pieces ("chunks") is necessary because embedding
+models and LLMs have a limited number of tokens they can read at once —
+[NVIDIA's RAG 101 guide](https://developer.nvidia.com/blog/rag-101-demystifying-retrieval-augmented-generation-pipelines/)
+notes that a model like `e5-large-v2` maxes out around 512 tokens, and
+calls text-splitting "a nuanced process" rather than a trivial one. We
+looked at the common approaches before picking ours:
+
+| Approach | What we found |
+|---|---|
+| Fixed-size / character count | Simplest to implement, but cuts text at arbitrary points with no regard for sentence structure. A [chunking strategies overview](https://medium.com/@rahulpant.me/chunking-text-splitting-strategies-llms-579ab4ede2eb) calls this "a rarely used approach" in practice, more of a fallback than a real strategy. |
+| Sentence/paragraph splitting | Respects natural language boundaries, but chunks can end up very uneven in size — some too short to be useful, some still too long. |
+| Sliding window (overlapping fixed-size chunks) | [Analytics Vidhya's chunking guide](https://www.analyticsvidhya.com/blog/2024/10/chunking-techniques-to-build-exceptional-rag-systems/) notes this "preserves context across chunks" and "reduces information loss at chunk boundaries," at the cost of some redundant, repeated text and extra chunks to store. |
+| Semantic splitting (ML-based) | Produces the most contextually meaningful chunks by splitting where topics actually shift, but is "computationally expensive" and adds real implementation complexity for not much benefit on our short entries. |
+
+**What we actually do (`app/chunking.py`)**: since our knowledge base is
+already made of short, atomic facts rather than long documents, most
+entries (anything ≤120 words) are embedded as a **single chunk, unchanged**
+— splitting a one-sentence fact would only lose context for no benefit.
+Any entry longer than that threshold falls back to **sliding-window**
+chunking (500 words, 80-word overlap) — chosen over fixed-size-only because
+of the context-preservation benefit above, and considered a safe, simple
+default given how rarely it's actually triggered by this dataset. This
+hybrid is a deliberate, documented tradeoff: simplicity and speed for the
+common case (short entries), with the more careful sliding-window approach
+reserved for the rare long one.
+
+### Where it's stored
+
+[Chroma](https://www.trychroma.com/), a simple local database for searching
+by meaning rather than exact words, saved on your computer in `chroma_db/`.
+Every chunk carries its `category` and originating entry `id` as metadata,
+so retrieval results can always be traced back to a specific category and
+fact. We picked Chroma over a cloud service like Pinecone because it needs
+no sign-up, no internet, and no cost — a good fit for a small personal
+project. If we ever wanted to move to a cloud database, only
+`app/retriever.py` would need to change.
 
 ## Step 3: How a conversation actually works
 
@@ -159,11 +213,15 @@ the `.env` file to match (e.g. `OLLAMA_MODEL=phi3`).
 
 ## Things you can try asking
 
-- "What's the correct hook naming convention in Drupal?" → answered from `coding_standards.md`.
-- "How do I prevent SQL injection in a custom module?" → answered from `security_best_practices.md`.
+- "What's the correct hook naming convention in Drupal?" → answered from the `drupal` category.
+- "How do I prevent SQL injection in a custom module?" → also from the `drupal` category.
+- "What's the difference between let and const in JavaScript?" → answered from the `javascript` category.
+- "How does the useEffect hook work in React?" → answered from the `react` category.
+- "What does box-sizing: border-box do?" → answered from the `html_css` category.
+- "How does npm semantic versioning work?" → answered from the `nodejs` category.
 - "What's the weather in Ahmedabad right now?" → uses the live weather tool, no documents needed.
 - "What's the weather in Ahmedabad, and also how does Drupal handle CSRF protection?" → uses both the tool and document search in one go.
-- Ask about security, then follow up with "and what about performance?" → tests whether it remembers the conversation.
+- Ask about a Drupal topic, then follow up with "and what about performance?" → tests whether it remembers the conversation.
 
 ## Things to be aware of (current limitations)
 

@@ -45,8 +45,9 @@ fences (```) for any code, file names, or config snippets. Use plain sentences f
 answers that don't need structure — don't force lists onto a one-line answer.
 - Respond with ONLY a JSON object of this exact shape, no other text, no markdown fences around \
 the JSON itself (the "answer" field's value may contain its own markdown/newlines):
-{"answer": "<your answer, using markdown formatting inside this string where it helps readability>", "used_tool": false, "sources": ["<filename>", ...]}
-- "sources" must list only the filenames actually used from CONTEXT (empty list if none, or if \
+{"answer": "<your answer, using markdown formatting inside this string where it helps readability>", "used_tool": false, "sources": ["<entry id>", ...]}
+- "sources" must list only the entry ids actually used from CONTEXT — each context block is \
+labeled "[entry_id]" right before its text, copy that id exactly (empty list if none, or if \
 the answer came from general knowledge)."""
 
 GREETING_SYSTEM_PROMPT = """You are a friendly assistant for Drupal developers. The user sent a \

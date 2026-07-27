@@ -18,5 +18,10 @@ def retrieve(query: str, top_k: int = TOP_K) -> list[dict]:
     ):
         if distance > MAX_RELEVANT_DISTANCE:
             continue
-        hits.append({"text": doc, "source": meta["source"], "distance": distance})
+        hits.append({
+            "text": doc,
+            "category": meta["category"],
+            "source": meta["source_id"],
+            "distance": distance,
+        })
     return hits

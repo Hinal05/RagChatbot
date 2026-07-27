@@ -17,6 +17,12 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 80
+
+# Knowledge-base entries at or below this word count are embedded as a single
+# chunk unchanged — our entries are short, atomic facts (see data/knowledge_base.json),
+# so sliding-window splitting only kicks in for the rare longer entry.
+SHORT_ENTRY_WORD_THRESHOLD = 120
+
 TOP_K = 4
 MAX_HISTORY_TURNS = 6
 

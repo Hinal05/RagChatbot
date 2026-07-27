@@ -106,11 +106,21 @@ Here's what happens, step by step, every time you send a message
    any), the weather result (if relevant), and your recent conversation
    history, then asked to reply in one fixed, structured format:
    an answer, whether it used a tool, and which document(s) it used. If no
-   relevant document was found, we told the model exactly what to do:
-   answer basic general-knowledge questions directly (like "What is
-   Drupal?"), or honestly say "that's not in my knowledge base" — and never
+   relevant document was found, the model is told to answer any Drupal
+   question it can confidently answer from its own general knowledge (not
+   just basic ones — this covers most Drupal topics beyond our small
+   knowledge base), mention that the answer isn't from the curated docs,
+   and only say "I don't know" when it's genuinely not confident — never
    make up a fake excuse (we once saw it falsely claim its training data
    was outdated, which simply wasn't true).
+
+   We looked into having it search Drupal.org live for anything not in the
+   local docs, but Drupal.org (and related subdomains like `api.drupal.org`)
+   now sit behind an anti-bot JavaScript challenge — every plain request,
+   even to `robots.txt`, returns a generic challenge page instead of real
+   content. Rather than trying to defeat that protection, we rely on the
+   AI model's own general Drupal knowledge for anything outside the local
+   docs instead.
 5. **Double-checking the answer's format** — the AI's reply gets checked to
    make sure it's actually valid, structured data. If it isn't, we ask the
    model again with a correction; if it still fails, we show a safe,

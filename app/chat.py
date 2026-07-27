@@ -24,22 +24,30 @@ Respond with ONLY a JSON object, no other text:
 {"intent": "greeting"} or {"intent": "chitchat"} or {"intent": "weather", "location": "<city>"} \
 or {"intent": "question"}."""
 
+LOCATION_EXTRACT_SYSTEM_PROMPT = """Extract the city or place name the user is asking about the \
+weather for. Respond with ONLY a JSON object, no other text:
+{"location": "<city>"} — or {"location": null} if no place is mentioned."""
+
 ANSWER_SYSTEM_PROMPT = """You are a helpful assistant for Drupal developers, answering \
 questions using the provided context. Rules:
 - Use the CONTEXT section as your primary source of truth when it is relevant to the question.
-- If CONTEXT is "(no relevant documents found)":
-  - If the question is a basic general-knowledge question (e.g. "What is Drupal?") that you can \
-answer confidently and correctly from your own knowledge, answer it directly and set "sources" to [].
-  - If the question depends on this project's specific knowledge base (its coding standards, \
-security practices, performance tuning, or module development conventions) and you don't have that \
-context, say plainly that you don't have that specific information in your knowledge base. Do not \
-invent a reason (e.g. never claim a training/knowledge cutoff date — that is not why the answer is \
-missing).
-- If TOOL_RESULT is provided, incorporate it directly into your answer.
-- Respond with ONLY a JSON object of this exact shape, no other text, no markdown fences:
-{"answer": "<your answer as plain text>", "used_tool": <true or false>, "sources": ["<filename>", ...]}
+- If CONTEXT is "(no relevant documents found)": this project's knowledge base is small (a few \
+short docs on coding standards, security, performance, and module development) and won't cover most \
+Drupal topics. For any Drupal-related question you can answer confidently and correctly from your \
+own general knowledge (not just "basic" ones — this includes specific APIs, modules, or features), \
+answer it directly, mention that this comes from general knowledge rather than the project's \
+curated docs, and set "sources" to []. Only say you don't know if you're genuinely not confident in \
+the answer — never invent a reason for not knowing (e.g. never claim a training/knowledge cutoff \
+date — that is not why an answer would be missing).
+- Structure the "answer" text itself for readability: use numbered steps for a sequence of \
+actions, a bullet list (lines starting with "- ") for a set of related points, and markdown code \
+fences (```) for any code, file names, or config snippets. Use plain sentences for simple factual \
+answers that don't need structure — don't force lists onto a one-line answer.
+- Respond with ONLY a JSON object of this exact shape, no other text, no markdown fences around \
+the JSON itself (the "answer" field's value may contain its own markdown/newlines):
+{"answer": "<your answer, using markdown formatting inside this string where it helps readability>", "used_tool": false, "sources": ["<filename>", ...]}
 - "sources" must list only the filenames actually used from CONTEXT (empty list if none, or if \
-the answer came purely from TOOL_RESULT or general knowledge)."""
+the answer came from general knowledge)."""
 
 GREETING_SYSTEM_PROMPT = """You are a friendly assistant for Drupal developers. The user sent a \
 greeting or small talk, not a real question. Reply with a short, warm, natural response (1-2 \
@@ -53,6 +61,14 @@ class ChatSession:
         self.history: list[dict] = []  # [{"role": "user"/"assistant", "content": str}]
 
     def _classify_intent(self, user_message: str) -> dict:
+        if "weather" in user_message.lower():
+            # The general intent classifier is flaky on unusual phrasing
+            # (e.g. "Could you guide me the Ahmedabad weather?" was seen
+            # classified as "question" on one call and "weather" on another
+            # identical call). Any message mentioning "weather" is reliably
+            # a weather request, so skip the classifier and go straight to
+            # a narrower, easier task: just extracting the location.
+            return {"intent": "weather", "location": self._extract_location(user_message)}
         response = _client.chat(
             model=OLLAMA_MODEL,
             messages=[
@@ -66,6 +82,21 @@ class ChatSession:
             return json.loads(raw[start:end + 1])
         except (json.JSONDecodeError, ValueError):
             return {"intent": "question"}
+
+    def _extract_location(self, user_message: str) -> str | None:
+        response = _client.chat(
+            model=OLLAMA_MODEL,
+            messages=[
+                {"role": "system", "content": LOCATION_EXTRACT_SYSTEM_PROMPT},
+                {"role": "user", "content": user_message},
+            ],
+        )
+        raw = response["message"]["content"].strip()
+        try:
+            start, end = raw.find("{"), raw.rfind("}")
+            return json.loads(raw[start:end + 1]).get("location")
+        except (json.JSONDecodeError, ValueError):
+            return None
 
     def _build_context_block(self, hits: list[dict]) -> str:
         if not hits:
@@ -83,18 +114,27 @@ class ChatSession:
             return user_message
         return f"{prev_user_messages[-1]} {user_message}"
 
-    def _call_model(self, system_prompt: str, user_message: str, context_block: str | None, tool_result: dict | None) -> str:
+    def _call_model(self, system_prompt: str, user_message: str, context_block: str | None) -> str:
         recent_history = self.history[-(MAX_HISTORY_TURNS * 2):]
         messages = [{"role": "system", "content": system_prompt}]
         messages += recent_history
-        if context_block is None and tool_result is None:
-            content = user_message
-        else:
-            tool_block = json.dumps(tool_result) if tool_result else "(none)"
-            content = f"CONTEXT:\n{context_block}\n\nTOOL_RESULT:\n{tool_block}\n\nQUESTION:\n{user_message}"
+        content = user_message if context_block is None else f"CONTEXT:\n{context_block}\n\nQUESTION:\n{user_message}"
         messages.append({"role": "user", "content": content})
         response = _client.chat(model=OLLAMA_MODEL, messages=messages)
         return response["message"]["content"]
+
+    def _format_weather_answer(self, weather: dict) -> ChatAnswer:
+        """Builds the weather reply directly from the tool's structured data instead of
+        letting the LLM paraphrase it — avoids the model turning e.g. "thunderstorm"
+        into odd wording like "thunderous" when rendering the numbers into prose."""
+        if "error" in weather:
+            return ChatAnswer(answer=weather["error"], used_tool=True, sources=[])
+        answer = (
+            f"Current weather in {weather['location']}: {weather['condition']}, "
+            f"{weather['temperature_c']}°C (feels like {weather['feels_like_c']}°C), "
+            f"humidity {weather['humidity_pct']}%, wind {weather['windspeed_kmh']} km/h."
+        )
+        return ChatAnswer(answer=answer, used_tool=True, sources=[])
 
     def _finish(self, user_message: str, parsed: ChatAnswer) -> ChatAnswer:
         self.history.append({"role": "user", "content": user_message})
@@ -110,19 +150,18 @@ class ChatSession:
         intent = route.get("intent", "question")
 
         if intent in ("greeting", "chitchat"):
-            raw = self._call_model(GREETING_SYSTEM_PROMPT, user_message, None, None)
+            raw = self._call_model(GREETING_SYSTEM_PROMPT, user_message, None)
             parsed = parse_structured_answer(raw) or ChatAnswer(answer="Hi there! Ask me anything about Drupal.", used_tool=False, sources=[])
             return self._finish(user_message, parsed)
 
-        tool_result = None
-        context_block = "(no relevant documents found)"
         if intent == "weather" and route.get("location"):
-            tool_result = get_weather(route["location"])
-        else:
-            hits = retrieve(self._retrieval_query(user_message))
-            context_block = self._build_context_block(hits)
+            weather = get_weather(route["location"])
+            return self._finish(user_message, self._format_weather_answer(weather))
 
-        raw = self._call_model(ANSWER_SYSTEM_PROMPT, user_message, context_block, tool_result)
+        hits = retrieve(self._retrieval_query(user_message))
+        context_block = self._build_context_block(hits)
+
+        raw = self._call_model(ANSWER_SYSTEM_PROMPT, user_message, context_block)
         parsed = parse_structured_answer(raw)
 
         if parsed is None:
@@ -131,7 +170,6 @@ class ChatSession:
                 ANSWER_SYSTEM_PROMPT,
                 user_message + "\n\n(Your previous reply was not valid JSON. Reply with ONLY the JSON object.)",
                 context_block,
-                tool_result,
             )
             parsed = parse_structured_answer(retry_raw)
 

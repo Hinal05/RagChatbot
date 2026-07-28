@@ -20,13 +20,12 @@ git clone <your-repo-url> rag-chatbot
 cd rag-chatbot
 ```
 
-## 3. Install Ollama and pull a model
+## 3. Install Ollama and pull models
 
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
-ollama pull llama3.1:8b     # ~5GB, best quality
-# or a lighter model if resources are limited:
-ollama pull phi3
+ollama pull phi3            # ~2.2GB, the default model
+ollama pull qwen2.5:0.5b    # ~400MB, a second small/fast model for the UI's model-switcher
 ```
 
 Ollama must be running (`ollama serve`, or it starts automatically as a service
@@ -50,14 +49,15 @@ Then edit `.env` if needed:
 
 ```
 EMBEDDING_MODEL_NAME=intfloat/e5-base-v2
-OLLAMA_MODEL=llama3.1:8b        # match whatever model you pulled in step 3
+OLLAMA_MODEL=phi3              # default model; switch models at runtime in ui.py
 OLLAMA_HOST=http://localhost:11434
 ```
 
 ## 6. Build the vector index
 
-The knowledge base lives in `data/*.md`. It must be embedded into Chroma
-**once** (and again any time you change the files in `data/`):
+The knowledge base lives in `data/knowledge_base.json` (110 entries across 5
+categories: html_css, javascript, react, nodejs, drupal). It must be embedded
+into Chroma **once** (and again any time you change that file):
 
 ```bash
 python -m app.ingest
@@ -73,7 +73,13 @@ It is gitignored on purpose; regenerate it on every new machine instead of copyi
 python cli_chat.py
 ```
 
-**Web UI:**
+**Streamlit UI** (chat layout, model-switcher dropdown, streamed responses):
+```bash
+streamlit run ui.py
+```
+Opens automatically in your browser (usually http://localhost:8501).
+
+**FastAPI web UI** (alternate interface, custom HTML page):
 ```bash
 uvicorn main:app --reload --port 8001
 ```
@@ -87,14 +93,13 @@ Then open http://127.0.0.1:8001 in a browser.
 | Install deps | `pip install -r requirements.txt` |
 | Rebuild vector index | `python -m app.ingest` |
 | Run in terminal | `python cli_chat.py` |
-| Run web app | `uvicorn main:app --reload --port 8001` |
-| Pull a different Ollama model | `ollama pull <model-name>` then update `OLLAMA_MODEL` in `.env` |
+| Run Streamlit UI | `streamlit run ui.py` |
+| Run FastAPI web app | `uvicorn main:app --reload --port 8001` |
+| Pull a different Ollama model | `ollama pull <model-name>`, then either update `OLLAMA_MODEL` in `.env` or pick it from `ui.py`'s dropdown at runtime |
 
 ## What not to copy / commit
 
-- `venv/` — recreate with `python3 -m venv venv` on the target machine (it's
-  currently tracked in git despite being in `.gitignore`; worth removing from
-  git history with `git rm -r --cached venv` at some point).
+- `venv/` — recreate with `python3 -m venv venv` on the target machine.
 - `chroma_db/` — regenerate with `python -m app.ingest`.
 - `__pycache__/`, `*.pyc` — Python bytecode cache, safe to delete anytime.
 - `.env` — machine-specific config; copy `.env.example` instead and fill it in.
@@ -107,5 +112,6 @@ Then open http://127.0.0.1:8001 in a browser.
   so Chroma has no data indexed yet.
 - **Slow first response** → the embedding model and Ollama model both need to
   load into memory on first use; subsequent requests are faster.
-</content>
-</invoke>
+- **Model-switcher dropdown only shows one model** → you haven't pulled a second
+  Ollama model yet — run `ollama pull qwen2.5:0.5b` (or any other model) and
+  refresh the Streamlit page.

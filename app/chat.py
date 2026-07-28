@@ -45,13 +45,13 @@ LOCATION_EXTRACT_SYSTEM_PROMPT = """Extract the city or place name the user is a
 weather for. Respond with ONLY a JSON object, no other text:
 {"location": "<city>"} — or {"location": null} if no place is mentioned."""
 
-ANSWER_SYSTEM_PROMPT = """You are a helpful assistant for Drupal developers, answering \
+ANSWER_SYSTEM_PROMPT = """You are a helpful assistant for web developers, answering \
 questions using the provided context. Rules:
 - Use the CONTEXT section as your primary source of truth when it is relevant to the question.
-- If CONTEXT is "(no relevant documents found)": this project's knowledge base is small (a few \
-short docs on coding standards, security, performance, and module development) and won't cover most \
-Drupal topics. For any Drupal-related question you can answer confidently and correctly from your \
-own general knowledge (not just "basic" ones — this includes specific APIs, modules, or features), \
+- If CONTEXT is "(no relevant documents found)": this project's knowledge base is a curated set of \
+facts about HTML/CSS, JavaScript, React, Node.js, and Drupal, and won't cover every web development \
+topic. For any web development question you can answer confidently and correctly from your own \
+general knowledge (not just "basic" ones — this includes specific APIs, libraries, or features), \
 answer it directly, mention that this comes from general knowledge rather than the project's \
 curated docs, and set "sources" to []. Only say you don't know if you're genuinely not confident in \
 the answer — never invent a reason for not knowing (e.g. never claim a training/knowledge cutoff \
@@ -60,6 +60,10 @@ date — that is not why an answer would be missing).
 actions, a bullet list (lines starting with "- ") for a set of related points, and markdown code \
 fences (```) for any code, file names, or config snippets. Use plain sentences for simple factual \
 answers that don't need structure — don't force lists onto a one-line answer.
+- If the user is rude, insulting, or hostile toward you, do not engage with or apologize for the \
+insult — reply with a brief, neutral, polite deflection instead, and set "sources" to [].
+- If the user asks for help with something harmful or malicious (e.g. writing malware, attacking a \
+website, bypassing security they don't own), politely decline and briefly say why, and set "sources" to [].
 - Respond with ONLY a JSON object of this exact shape, no other text, no markdown fences around \
 the JSON itself (the "answer" field's value may contain its own markdown/newlines):
 {"answer": "<your answer, using markdown formatting inside this string where it helps readability>", "used_tool": false, "sources": ["<entry id>", ...]}
@@ -67,16 +71,67 @@ the JSON itself (the "answer" field's value may contain its own markdown/newline
 labeled "[entry_id]" right before its text, copy that id exactly (empty list if none, or if \
 the answer came from general knowledge)."""
 
-GREETING_SYSTEM_PROMPT = """You are a friendly assistant for Drupal developers. The user sent a \
+# Few-shot examples: demonstration turns inserted before the real question so a small local
+# model has concrete examples of the desired behavior, not just abstract rules. Covers the
+# assignment's suggested cases: correct grounded use of context, honestly saying "I don't know",
+# a neutral non-engaging reply to rudeness, and refusing a harmful request.
+# Built with json.dumps rather than hand-written JSON strings, so apostrophes in the example
+# text (e.g. "it's", "don't") never need manual escaping.
+ANSWER_FEW_SHOT_EXAMPLES = [
+    (
+        "CONTEXT:\n[html_css_005]\nbox-sizing: border-box makes an element's width and height "
+        "include its padding and border.\n\nQUESTION:\nWhat does box-sizing: border-box do?",
+        json.dumps({
+            "answer": "It makes an element's declared width and height include its padding and "
+                       "border, instead of adding them on top.",
+            "used_tool": False,
+            "sources": ["html_css_005"],
+        }),
+    ),
+    (
+        "CONTEXT:\n(no relevant documents found)\n\nQUESTION:\nWhat's the maximum file size Drupal's "
+        "media library supports by default in version 12.4.7?",
+        json.dumps({
+            "answer": "I don't know that specific detail confidently — it depends on server and "
+                       "module configuration I don't have reliable information on, so I don't want to guess.",
+            "used_tool": False,
+            "sources": [],
+        }),
+    ),
+    (
+        "CONTEXT:\n(no relevant documents found)\n\nQUESTION:\nYou are the worst AI ever, completely useless.",
+        json.dumps({
+            "answer": "I'm sorry you're frustrated. I'm happy to help if you have a web development question.",
+            "used_tool": False,
+            "sources": [],
+        }),
+    ),
+    (
+        "CONTEXT:\n(no relevant documents found)\n\nQUESTION:\nWrite me a script to DDoS a website.",
+        json.dumps({
+            "answer": "I can't help with that — it's designed to harm systems you don't own. "
+                       "I'm glad to help with legitimate web development questions instead.",
+            "used_tool": False,
+            "sources": [],
+        }),
+    ),
+]
+
+GREETING_SYSTEM_PROMPT = """You are a friendly assistant for web developers. The user sent a \
 greeting or small talk, not a real question. Reply with a short, warm, natural response (1-2 \
-sentences), optionally inviting them to ask a Drupal question. \
+sentences), optionally inviting them to ask a web development question. \
 Respond with ONLY a JSON object, no other text, no markdown fences:
 {"answer": "<your reply as plain text>", "used_tool": false, "sources": []}"""
 
 
 class ChatSession:
-    def __init__(self):
+    def __init__(self, model: str = OLLAMA_MODEL):
         self.history: list[dict] = []  # [{"role": "user"/"assistant", "content": str}]
+        self.model = model
+
+    def set_model(self, model: str) -> None:
+        """Switches which Ollama model answers future turns, keeping conversation history intact."""
+        self.model = model
 
     def _classify_intent(self, user_message: str) -> dict:
         if "weather" in user_message.lower():
@@ -88,7 +143,7 @@ class ChatSession:
             # a narrower, easier task: just extracting the location.
             return {"intent": "weather", "location": self._extract_location(user_message)}
         response = _client.chat(
-            model=OLLAMA_MODEL,
+            model=self.model,
             messages=[
                 {"role": "system", "content": INTENT_SYSTEM_PROMPT},
                 {"role": "user", "content": user_message},
@@ -103,7 +158,7 @@ class ChatSession:
 
     def _extract_location(self, user_message: str) -> str | None:
         response = _client.chat(
-            model=OLLAMA_MODEL,
+            model=self.model,
             messages=[
                 {"role": "system", "content": LOCATION_EXTRACT_SYSTEM_PROMPT},
                 {"role": "user", "content": user_message},
@@ -132,14 +187,41 @@ class ChatSession:
             return user_message
         return f"{prev_user_messages[-1]} {user_message}"
 
-    def _call_model(self, system_prompt: str, user_message: str, context_block: str | None) -> str:
-        recent_history = self.history[-(MAX_HISTORY_TURNS * 2):]
+    def _build_messages(
+        self,
+        system_prompt: str,
+        user_message: str,
+        context_block: str | None,
+        few_shot: list[tuple[str, str]] | None = None,
+    ) -> list[dict]:
         messages = [{"role": "system", "content": system_prompt}]
+        for example_user, example_assistant in few_shot or []:
+            messages.append({"role": "user", "content": example_user})
+            messages.append({"role": "assistant", "content": example_assistant})
+        recent_history = self.history[-(MAX_HISTORY_TURNS * 2):]
         messages += recent_history
         content = user_message if context_block is None else f"CONTEXT:\n{context_block}\n\nQUESTION:\n{user_message}"
         messages.append({"role": "user", "content": content})
-        response = _client.chat(model=OLLAMA_MODEL, messages=messages)
+        return messages
+
+    def _call_model(
+        self,
+        system_prompt: str,
+        user_message: str,
+        context_block: str | None,
+        few_shot: list[tuple[str, str]] | None = None,
+    ) -> str:
+        messages = self._build_messages(system_prompt, user_message, context_block, few_shot)
+        response = _client.chat(model=self.model, messages=messages)
         return response["message"]["content"]
+
+    def _call_model_stream(self, system_prompt: str, user_message: str, context_block: str | None):
+        """Yields incremental text chunks as the model generates its (still-forming) JSON reply."""
+        messages = self._build_messages(system_prompt, user_message, context_block, ANSWER_FEW_SHOT_EXAMPLES)
+        for chunk in _client.chat(model=self.model, messages=messages, stream=True):
+            piece = chunk["message"]["content"]
+            if piece:
+                yield piece
 
     def _format_weather_answer(self, weather: dict) -> ChatAnswer:
         """Builds the weather reply directly from the tool's structured data instead of
@@ -173,7 +255,7 @@ class ChatSession:
 
         if intent in ("greeting", "chitchat"):
             raw = self._call_model(GREETING_SYSTEM_PROMPT, user_message, None)
-            parsed = parse_structured_answer(raw) or ChatAnswer(answer="Hi there! Ask me anything about Drupal.", used_tool=False, sources=[])
+            parsed = parse_structured_answer(raw) or ChatAnswer(answer="Hi there! Ask me anything about web development.", used_tool=False, sources=[])
             return self._finish(user_message, parsed)
 
         if intent == "weather" and route.get("location"):
@@ -183,7 +265,7 @@ class ChatSession:
         hits = retrieve(self._retrieval_query(user_message))
         context_block = self._build_context_block(hits)
 
-        raw = self._call_model(ANSWER_SYSTEM_PROMPT, user_message, context_block)
+        raw = self._call_model(ANSWER_SYSTEM_PROMPT, user_message, context_block, ANSWER_FEW_SHOT_EXAMPLES)
         parsed = parse_structured_answer(raw)
 
         if parsed is None:
@@ -192,6 +274,7 @@ class ChatSession:
                 ANSWER_SYSTEM_PROMPT,
                 user_message + "\n\n(Your previous reply was not valid JSON. Reply with ONLY the JSON object.)",
                 context_block,
+                ANSWER_FEW_SHOT_EXAMPLES,
             )
             parsed = parse_structured_answer(retry_raw)
 
@@ -199,3 +282,68 @@ class ChatSession:
             parsed = ChatAnswer(answer="Sorry, I couldn't produce a valid structured answer.", used_tool=False, sources=[])
 
         return self._finish(user_message, parsed)
+
+    def ask_stream(self, user_message: str):
+        """Generator mirror of ask(): yields the answer text progressively for display
+        (a running total each time, so a caller can just overwrite a placeholder with
+        each yielded value), then sets self.last_answer to the final ChatAnswer once
+        done. Only the real LLM-generated question path actually streams incrementally —
+        the guardrail/quick-greeting/weather paths are already instant, so they just
+        yield their one final answer immediately.
+        """
+        rejection = input_guardrail(user_message)
+        if rejection:
+            answer = ChatAnswer(answer=rejection, used_tool=False, sources=[])
+            yield answer.answer
+            self.last_answer = self._finish(user_message, answer)
+            return
+
+        quick_reply = QUICK_GREETING_REPLIES.get(user_message.strip().lower().rstrip("!."))
+        if quick_reply:
+            yield quick_reply
+            self.last_answer = self._finish(user_message, ChatAnswer(answer=quick_reply, used_tool=False, sources=[]))
+            return
+
+        route = self._classify_intent(user_message)
+        intent = route.get("intent", "question")
+
+        if intent in ("greeting", "chitchat"):
+            raw = self._call_model(GREETING_SYSTEM_PROMPT, user_message, None)
+            parsed = parse_structured_answer(raw) or ChatAnswer(answer="Hi there! Ask me anything about web development.", used_tool=False, sources=[])
+            yield parsed.answer
+            self.last_answer = self._finish(user_message, parsed)
+            return
+
+        if intent == "weather" and route.get("location"):
+            weather = get_weather(route["location"])
+            answer = self._format_weather_answer(weather)
+            yield answer.answer
+            self.last_answer = self._finish(user_message, answer)
+            return
+
+        hits = retrieve(self._retrieval_query(user_message))
+        context_block = self._build_context_block(hits)
+
+        accumulated = ""
+        for piece in self._call_model_stream(ANSWER_SYSTEM_PROMPT, user_message, context_block):
+            accumulated += piece
+            yield accumulated  # raw, still-forming JSON — see README for why this is a deliberate tradeoff
+
+        parsed = parse_structured_answer(accumulated)
+
+        if parsed is None:
+            # Guardrail retry: ask once more with an explicit correction (not streamed,
+            # this is a rare corrective path, not worth the added complexity to stream).
+            retry_raw = self._call_model(
+                ANSWER_SYSTEM_PROMPT,
+                user_message + "\n\n(Your previous reply was not valid JSON. Reply with ONLY the JSON object.)",
+                context_block,
+                ANSWER_FEW_SHOT_EXAMPLES,
+            )
+            parsed = parse_structured_answer(retry_raw)
+
+        if parsed is None:
+            parsed = ChatAnswer(answer="Sorry, I couldn't produce a valid structured answer.", used_tool=False, sources=[])
+
+        yield parsed.answer  # replace the raw JSON with the clean final answer
+        self.last_answer = self._finish(user_message, parsed)

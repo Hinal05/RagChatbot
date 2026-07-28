@@ -6,3 +6,4 @@ chromadb
 ollama
 requests
 pydantic
+streamlit

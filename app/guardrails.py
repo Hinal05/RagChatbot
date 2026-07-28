@@ -48,7 +48,11 @@ def parse_structured_answer(raw_text: str) -> ChatAnswer | None:
     if start == -1 or end == -1:
         return None
     try:
-        data = json.loads(text[start:end + 1])
+        # strict=False allows literal control characters (e.g. raw newlines) inside
+        # string values — small local models often emit an actual line break instead
+        # of an escaped "\n" when asked for multi-line/structured answers, which
+        # strict JSON parsing would otherwise reject as invalid.
+        data = json.loads(text[start:end + 1], strict=False)
         return ChatAnswer(**data)
     except (json.JSONDecodeError, ValidationError):
         return None

@@ -31,11 +31,19 @@ QUICK_GREETING_REPLIES = {
     "bye": "Bye! Come back anytime you have a web dev question.",
 }
 
+# Deterministic weather-intent triggers: kept intentionally narrow, avoiding generic words
+# like "hot"/"cold"/"rain" that would collide with real web-dev terms (e.g. "hot reloading",
+# "cold start"). Each of these is specific enough to reliably mean an actual weather request.
+WEATHER_KEYWORDS = ["weather", "umbrella", "forecast", "raining", "snowing", "sunny outside"]
+
 INTENT_SYSTEM_PROMPT = """You are a routing assistant. Classify the user's latest message \
 into exactly one of these intents:
 - "greeting": a hello/hi/greeting with no real question.
 - "chitchat": small talk, thanks, pleasantries — not a real question needing information.
-- "weather": asking for a LIVE weather lookup for a specific place.
+- "weather": asking for a LIVE weather lookup for a specific place — this includes INDIRECT \
+phrasing that implies wanting current weather/conditions without saying the word "weather", \
+e.g. "do I need an umbrella in London?", "is it raining in Paris?", "how hot is it in Tokyo?", \
+"should I wear a jacket in Boston today?".
 - "question": any real question, including Drupal questions and general knowledge questions.
 Respond with ONLY a JSON object, no other text:
 {"intent": "greeting"} or {"intent": "chitchat"} or {"intent": "weather", "location": "<city>"} \
@@ -134,13 +142,19 @@ class ChatSession:
         self.model = model
 
     def _classify_intent(self, user_message: str) -> dict:
-        if "weather" in user_message.lower():
+        lowered = user_message.lower()
+        if any(kw in lowered for kw in WEATHER_KEYWORDS):
             # The general intent classifier is flaky on unusual phrasing
             # (e.g. "Could you guide me the Ahmedabad weather?" was seen
             # classified as "question" on one call and "weather" on another
-            # identical call). Any message mentioning "weather" is reliably
-            # a weather request, so skip the classifier and go straight to
-            # a narrower, easier task: just extracting the location.
+            # identical call — and "Do I need an umbrella in London today?",
+            # the assignment's own demo phrasing, was misclassified as a
+            # plain "question" outright). Any message matching an obvious
+            # weather keyword is reliably a weather request, so skip the
+            # classifier and go straight to a narrower, easier task: just
+            # extracting the location. Deliberately excludes generic words
+            # like "hot"/"cold" that collide with real web-dev terms (e.g.
+            # "hot reloading").
             return {"intent": "weather", "location": self._extract_location(user_message)}
         response = _client.chat(
             model=self.model,
@@ -281,6 +295,11 @@ class ChatSession:
         if parsed is None:
             parsed = ChatAnswer(answer="Sorry, I couldn't produce a valid structured answer.", used_tool=False, sources=[])
 
+        # This path never actually has tool access (weather is handled entirely separately,
+        # deterministically, before reaching here) — force it rather than trust the model's
+        # own guess, since it was observed hallucinating used_tool=true on a plain question.
+        parsed.used_tool = False
+
         return self._finish(user_message, parsed)
 
     def ask_stream(self, user_message: str):
@@ -344,6 +363,9 @@ class ChatSession:
 
         if parsed is None:
             parsed = ChatAnswer(answer="Sorry, I couldn't produce a valid structured answer.", used_tool=False, sources=[])
+
+        # See the matching comment in ask() — this path never actually has tool access.
+        parsed.used_tool = False
 
         yield parsed.answer  # replace the raw JSON with the clean final answer
         self.last_answer = self._finish(user_message, parsed)

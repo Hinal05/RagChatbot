@@ -278,6 +278,65 @@ Here's what happens, step by step, every time you send a message
   correction message; if that also fails, it falls back to a safe generic
   message rather than ever showing something broken to the user.
 
+## Step 7: Streaming & the External Action (Live Weather)
+
+**Streaming** is covered in Step 4 above (`ChatSession.ask_stream`, used by
+`ui.py`) — real token-by-token streaming for AI-generated answers via
+Ollama's `stream=True`.
+
+**The external action**: live weather via the free
+[Open-Meteo](https://open-meteo.com) API (`app/tools.py`), geocoding a city
+name then fetching current temperature, feels-like, humidity, precipitation,
+wind, and condition — genuine factual data from a real API call, not a
+search engine query.
+
+- **Integration style — implicit, not explicit**: the assignment describes
+  two approaches: *explicit* function-calling, where the model itself
+  decides to call a described function (see
+  [OpenAI's function-calling guide](https://platform.openai.com/docs/guides/function-calling) —
+  model receives tool descriptions → decides to call one → your code
+  executes it → result goes back to the model to compose a reply), or
+  *implicit* detection, where your code recognizes the need for a tool from
+  the message itself. We use the implicit approach: `app/chat.py` detects
+  weather intent from keywords (`weather`, `umbrella`, `forecast`,
+  `raining`, `snowing`, "sunny outside") plus an LLM classifier fallback for
+  less direct phrasing, extracts the location, calls `get_weather()`
+  directly, and **formats the reply in code rather than asking the model to
+  phrase it** — this was a deliberate fix: letting the model paraphrase
+  structured weather data previously produced odd wording (once "thunderous"
+  instead of "thunderstorm"), so we removed that step entirely for
+  reliability. This was simpler to build correctly than full explicit
+  function-calling, and the assignment explicitly allows either approach.
+- **Real bug found and fixed while testing this**: the assignment's own
+  demonstration example — *"Do I need an umbrella in London today?"* —
+  initially failed. It doesn't contain the word "weather", so it bypassed
+  our keyword shortcut, and the LLM classifier alone misclassified it as a
+  plain question, producing "I can't check the weather" instead of an
+  answer. Fixed two ways: broadened the keyword list to include indirect
+  triggers like "umbrella"/"forecast"/"raining", and added explicit guidance
+  to the classifier prompt describing indirect phrasing. Deliberately
+  avoided generic words like "hot"/"cold"/"rain" as keywords since they
+  collide with real web-dev terms (e.g. "hot reloading", "cold start").
+  Verified fixed:
+
+  > **Q:** "Do I need an umbrella in London today?"
+  > **A:** "Current weather in London, United Kingdom: partly cloudy,
+  > 20.6°C (feels like 21.4°C), humidity 72%, wind 7.2 km/h."
+
+- **Another bug found in the same pass**: since weather is now handled
+  entirely in code (no LLM call), the model in the normal question-answering
+  path never actually has tool access anymore — yet its JSON schema still
+  includes a `used_tool` field, and it was observed hallucinating
+  `"used_tool": true` on a plain, non-weather question ("What is hot module
+  reloading in webpack?"). Fixed by forcing `used_tool = False`
+  deterministically on that path after parsing, rather than trusting the
+  model's own guess — the same principle already applied to weather's
+  formatting: don't let the model guess at something the code already knows
+  for certain.
+- **Error handling**: `get_weather()` catches request failures and unknown
+  locations, returning a plain error message rather than crashing or
+  hanging.
+
 ## Setting it up
 
 You'll need: Python 3.10 or newer, and [Ollama](https://ollama.com) installed

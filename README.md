@@ -337,6 +337,91 @@ search engine query.
   locations, returning a plain error message rather than crashing or
   hanging.
 
+## Step 8: Dynamic Prompting & Query Handling
+
+**The full dispatcher, in one diagram:**
+
+```
+user message
+     │
+     ▼
+input guardrail (empty/oversized/prompt-injection) ──► rejected? return message
+     │
+     ▼
+quick-greeting keyword match (hi/thanks/ok/bye/...) ──► matched? instant canned reply
+     │
+     ▼
+weather keyword match OR LLM intent classifier
+     │
+     ├─ greeting/chitchat ──► GREETING_SYSTEM_PROMPT, no retrieval
+     ├─ weather ──► get_weather() tool, formatted in code, no LLM call for the answer
+     └─ question
+            │
+            ▼
+     preprocess_query() — normalize whitespace/punctuation, expand abbreviations (js→JavaScript, etc.)
+            │
+            ▼
+     retrieve() from Chroma — top hit's `category` metadata determines...
+            │
+            ▼
+     dynamic system prompt: ANSWER_SYSTEM_PROMPT + a category-specific style note
+     (different wording for html_css / javascript / react / nodejs / drupal;
+     no suffix at all if nothing relevant was retrieved)
+            │
+            ▼
+     LLM call → parse → (retry once if malformed JSON)
+            │
+            ▼
+     postprocess_answer() — strips a leftover "As an AI..." opener if present
+            │
+            ▼
+     output guardrail already applied during parsing (Pydantic schema)
+            │
+            ▼
+        final answer
+```
+
+- **Dynamic system prompts by category** (`CATEGORY_PROMPT_STYLES` in
+  `app/chat.py`): after retrieval, the top hit's category picks a small,
+  genuinely different style note appended to the shared system prompt —
+  not five entirely separate prompts (that would duplicate the shared
+  rules/schema/few-shot instructions for no benefit). Verified directly —
+  asking a question in each category produces a different real suffix sent
+  to the model:
+
+  | Category | Style note added |
+  |---|---|
+  | `html_css` | Mention vendor prefixes / browser support gaps |
+  | `javascript` | Note browser compatibility caveats |
+  | `react` | Prefer function components/hooks in example code |
+  | `nodejs` | Mention version-specificity / required npm packages |
+  | `drupal` | Mention version-specificity across major Drupal versions |
+
+  A weather question or greeting never reaches this logic at all (they're
+  routed away earlier), and a question with no matching category (nothing
+  retrieved) gets the base prompt with no suffix — confirmed both cases
+  directly.
+- **Query preprocessing** (`preprocess_query` in `app/chat.py`), applied
+  before every retrieval: collapses repeated whitespace, de-duplicates
+  repeated punctuation ("what is js???" → "what is JavaScript?"), and
+  expands a small set of domain abbreviations that would otherwise
+  mismatch the knowledge base's wording (`js` → `JavaScript`, `ssr` →
+  `server-side rendering`, `hmr` → `Hot Module Replacement`) — only the
+  internal copy used for embedding is affected; your original message is
+  still what's stored in history and shown back to you. This sits in the
+  same stage as the existing follow-up-widening heuristic (Step 5) rather
+  than as a separate pipeline.
+- **Answer post-processing** (`postprocess_answer` in `app/chat.py`): a
+  small regex safety net that strips a leftover "As an AI, ..." /
+  "As an AI language model, ..." opener if the model adds one despite the
+  system prompt already discouraging it. This is a backstop, not the
+  primary defense — the system prompt itself is.
+- **Dynamic retrieval/tool routing** is really the same dispatcher shown
+  above — a question never touches the vector database at all if it's
+  actually a weather request (handled by the tool) or a greeting (handled
+  by a fixed short reply), and only "real questions" reach retrieval and
+  the category-dynamic prompt.
+
 ## Setting it up
 
 You'll need: Python 3.10 or newer, and [Ollama](https://ollama.com) installed

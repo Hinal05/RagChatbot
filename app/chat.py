@@ -44,6 +44,57 @@ QUICK_GREETING_REPLIES = {
 # "cold start"). Each of these is specific enough to reliably mean an actual weather request.
 WEATHER_KEYWORDS = ["weather", "umbrella", "forecast", "raining", "snowing", "sunny outside"]
 
+# Step 8 - dynamic system prompt by category: a small, genuinely meaningful behavioral
+# difference appended to ANSWER_SYSTEM_PROMPT based on the top retrieved chunk's category,
+# rather than a full separate prompt per category (which would duplicate the shared
+# rules/schema/few-shot instructions for no benefit). When no category applies (no local
+# hits, or a weather/greeting/chitchat turn), no suffix is added.
+CATEGORY_PROMPT_STYLES = {
+    "drupal": "This is a Drupal-specific question. Since Drupal changes between major "
+              "versions, mention if something is version-specific when relevant.",
+    "javascript": "This is a core JavaScript question. Note any browser compatibility "
+                  "caveats if relevant.",
+    "react": "This is a React question. Prefer function components and hooks in any "
+             "example code, since that's the modern convention.",
+    "nodejs": "This is a Node.js question. Mention if something is version-specific or "
+              "requires a particular npm package.",
+    "html_css": "This is an HTML/CSS question. Mention if a property needs a vendor "
+                "prefix or has notable browser support gaps, if relevant.",
+}
+
+# Step 8 - query preprocessing: normalization (collapse whitespace, de-duplicate repeated
+# punctuation like "???") and enrichment (expand abbreviations that would otherwise
+# mismatch the knowledge base's wording), applied before embedding a query for retrieval.
+_WHITESPACE_RE = re.compile(r"\s+")
+_REPEATED_PUNCT_RE = re.compile(r"([?!.])\1+")
+_ABBREVIATION_EXPANSIONS = {
+    r"\bjs\b": "JavaScript",
+    r"\bssr\b": "server-side rendering",
+    r"\bhmr\b": "Hot Module Replacement",
+}
+
+
+def preprocess_query(text: str) -> str:
+    """Normalizes whitespace/punctuation and expands domain abbreviations before retrieval —
+    the original, unprocessed text is still what's stored in history and shown to the user;
+    this only affects the internal copy used for embedding/search."""
+    normalized = _WHITESPACE_RE.sub(" ", text).strip()
+    normalized = _REPEATED_PUNCT_RE.sub(r"\1", normalized)
+    for pattern, expansion in _ABBREVIATION_EXPANSIONS.items():
+        normalized = re.sub(pattern, expansion, normalized, flags=re.IGNORECASE)
+    return normalized
+
+
+# Step 8 - answer post-processing: a safety-net regex for filler AI-disclaimer openers, in
+# case the model adds one despite ANSWER_SYSTEM_PROMPT already discouraging it. The system
+# prompt is the primary defense; this just catches what slips through.
+_FILLER_PREFIX_RE = re.compile(r"^(as an ai( language model)?,?\s*)", re.IGNORECASE)
+
+
+def postprocess_answer(text: str) -> str:
+    cleaned = _FILLER_PREFIX_RE.sub("", text, count=1).strip()
+    return cleaned if cleaned else text
+
 INTENT_SYSTEM_PROMPT = """You are a routing assistant. Classify the user's latest message \
 into exactly one of these intents:
 - "greeting": a hello/hi/greeting with no real question.
@@ -198,6 +249,14 @@ class ChatSession:
             return "(no relevant documents found)"
         return "\n\n".join(f"[{h['source']}]\n{h['text']}" for h in hits)
 
+    def _answer_system_prompt_for(self, hits: list[dict]) -> str:
+        """Dynamic system prompt (Step 8): appends a category-specific style note based on
+        the top retrieved chunk's category, when one applies."""
+        if not hits:
+            return ANSWER_SYSTEM_PROMPT
+        style = CATEGORY_PROMPT_STYLES.get(hits[0]["category"])
+        return f"{ANSWER_SYSTEM_PROMPT}\n\n{style}" if style else ANSWER_SYSTEM_PROMPT
+
     def _retrieval_query(self, user_message: str) -> str:
         """Widen the retrieval query with the prior user turn when the current
         message looks like a short follow-up (e.g. "what about the second one?")
@@ -211,13 +270,13 @@ class ChatSession:
         wasn't empty, corrupting retrieval with irrelevant content.
         """
         if not self.history or len(user_message.split()) > FOLLOW_UP_MAX_WORDS:
-            return user_message
+            return preprocess_query(user_message)
         if not FOLLOW_UP_CUE_RE.search(user_message.lower()):
-            return user_message
+            return preprocess_query(user_message)
         prev_user_messages = [m["content"] for m in self.history if m["role"] == "user"]
         if not prev_user_messages:
-            return user_message
-        return f"{prev_user_messages[-1]} {user_message}"
+            return preprocess_query(user_message)
+        return preprocess_query(f"{prev_user_messages[-1]} {user_message}")
 
     def _build_messages(
         self,
@@ -296,14 +355,15 @@ class ChatSession:
 
         hits = retrieve(self._retrieval_query(user_message))
         context_block = self._build_context_block(hits)
+        answer_system_prompt = self._answer_system_prompt_for(hits)
 
-        raw = self._call_model(ANSWER_SYSTEM_PROMPT, user_message, context_block, ANSWER_FEW_SHOT_EXAMPLES)
+        raw = self._call_model(answer_system_prompt, user_message, context_block, ANSWER_FEW_SHOT_EXAMPLES)
         parsed = parse_structured_answer(raw)
 
         if parsed is None:
             # Guardrail retry: ask once more with an explicit correction.
             retry_raw = self._call_model(
-                ANSWER_SYSTEM_PROMPT,
+                answer_system_prompt,
                 user_message + "\n\n(Your previous reply was not valid JSON. Reply with ONLY the JSON object.)",
                 context_block,
                 ANSWER_FEW_SHOT_EXAMPLES,
@@ -312,6 +372,8 @@ class ChatSession:
 
         if parsed is None:
             parsed = ChatAnswer(answer="Sorry, I couldn't produce a valid structured answer.", used_tool=False, sources=[])
+
+        parsed.answer = postprocess_answer(parsed.answer)
 
         # This path never actually has tool access (weather is handled entirely separately,
         # deterministically, before reaching here) — force it rather than trust the model's
@@ -360,9 +422,10 @@ class ChatSession:
 
         hits = retrieve(self._retrieval_query(user_message))
         context_block = self._build_context_block(hits)
+        answer_system_prompt = self._answer_system_prompt_for(hits)
 
         accumulated = ""
-        for piece in self._call_model_stream(ANSWER_SYSTEM_PROMPT, user_message, context_block):
+        for piece in self._call_model_stream(answer_system_prompt, user_message, context_block):
             accumulated += piece
             yield accumulated  # raw, still-forming JSON — see README for why this is a deliberate tradeoff
 
@@ -372,7 +435,7 @@ class ChatSession:
             # Guardrail retry: ask once more with an explicit correction (not streamed,
             # this is a rare corrective path, not worth the added complexity to stream).
             retry_raw = self._call_model(
-                ANSWER_SYSTEM_PROMPT,
+                answer_system_prompt,
                 user_message + "\n\n(Your previous reply was not valid JSON. Reply with ONLY the JSON object.)",
                 context_block,
                 ANSWER_FEW_SHOT_EXAMPLES,
@@ -381,6 +444,8 @@ class ChatSession:
 
         if parsed is None:
             parsed = ChatAnswer(answer="Sorry, I couldn't produce a valid structured answer.", used_tool=False, sources=[])
+
+        parsed.answer = postprocess_answer(parsed.answer)
 
         # See the matching comment in ask() — this path never actually has tool access.
         parsed.used_tool = False

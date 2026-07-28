@@ -388,11 +388,22 @@ file to match, or just pick it from `ui.py`'s dropdown at runtime.
   use the AI provider's built-in "function calling" feature instead of our
   simple approach, and/or a larger, more capable model.
 - **Follow-up questions use a simple trick, not true understanding.** If
-  your message is short (under 8 words) and comes after at least one earlier
-  exchange, we just tack on your previous question before searching. This
-  works for cases like "what about performance?" but won't catch longer or
-  less obvious follow-ups. A more thorough solution would use a dedicated AI
-  step to properly rewrite the question first.
+  your message is short (under 8 words), comes after at least one earlier
+  exchange, *and* contains a referring word like "it"/"that"/"this" or a
+  connector like "what about", we tack on your previous question before
+  searching. This works for cases like "what about performance?" but won't
+  catch longer or less obvious follow-ups. A more thorough solution would
+  use a dedicated AI step to properly rewrite the question first.
+
+  This used to just check message length, which caused a real bug: a
+  short but fully self-contained *new* question (e.g. "How does npm
+  semantic versioning work?", 7 words) right after an unrelated topic
+  would get that unrelated topic glued onto it, corrupting retrieval —
+  it was pulling in React chunks for an npm question. Requiring an actual
+  follow-up cue word fixed this, but one edge case remains: since it only
+  looks at the *immediately preceding* message, a short off-topic aside
+  (e.g. a rude comment) right before a genuine follow-up can still cause
+  the wrong prior topic to get attached.
 - **Documents are split by word count, not by meaning.** This is fine for
   our short files, but a much bigger set of documents would benefit from
   smarter splitting (e.g. by sentence or topic).

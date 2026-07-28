@@ -2,6 +2,7 @@
 and guardrailed structured output — orchestrating a local Ollama model.
 """
 import json
+import re
 
 import ollama
 
@@ -13,6 +14,13 @@ from app.guardrails import input_guardrail, parse_structured_answer, ChatAnswer
 _client = ollama.Client(host=OLLAMA_HOST)
 
 FOLLOW_UP_MAX_WORDS = 8
+
+# A short message only counts as a follow-up (see _retrieval_query) if it also contains
+# one of these referring pronouns/connectors — otherwise a short, self-contained new
+# question (or a short rude/off-topic message) would wrongly inherit the previous topic.
+FOLLOW_UP_CUE_RE = re.compile(
+    r"\b(it|that|this|those|these|they|them)\b|what about|how about|and what|and how"
+)
 
 # Exact-match fast path for trivial greetings/chitchat: on this CPU-only setup
 # a single Ollama call takes ~10-15s, and the greeting path normally makes two
@@ -193,8 +201,18 @@ class ChatSession:
     def _retrieval_query(self, user_message: str) -> str:
         """Widen the retrieval query with the prior user turn when the current
         message looks like a short follow-up (e.g. "what about the second one?")
-        that has no topical anchor of its own."""
+        that has no topical anchor of its own.
+
+        Requires BOTH being short AND actually containing a follow-up cue
+        (a referring pronoun or connector phrase) — being short alone isn't
+        enough. Found a real bug where any short, fully self-contained new
+        question (e.g. "How does npm semantic versioning work?", 7 words)
+        got the previous unrelated topic glued onto it just because history
+        wasn't empty, corrupting retrieval with irrelevant content.
+        """
         if not self.history or len(user_message.split()) > FOLLOW_UP_MAX_WORDS:
+            return user_message
+        if not FOLLOW_UP_CUE_RE.search(user_message.lower()):
             return user_message
         prev_user_messages = [m["content"] for m in self.history if m["role"] == "user"]
         if not prev_user_messages:

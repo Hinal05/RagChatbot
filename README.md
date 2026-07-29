@@ -18,10 +18,14 @@ retraining any model.
 data/knowledge_base.json →  app/chunking.py  →  app/ingest.py  →  chroma_db/ (a local search database)
                                                                        ↑
 your question  →  app/chat.py  →  app/retriever.py (finds the most relevant text)
-                        │
+                        │             (also uses app/utils.py for query
+                        │              pre-processing and follow-up detection)
                         ├─ app/tools.py (checks the weather, only when needed)
                         │
-                        └─ Ollama (the AI model) → a structured answer → app/guardrails.py (checks it)
+                        └─ Ollama (the AI model, using prompts from
+                           app/prompt_engineering.py) → a structured answer
+                           → app/utils.py (post-processing)
+                           → app/guardrails.py (parses/validates the JSON shape)
 ```
 
 In plain steps: your question comes in → the app decides what kind of message
@@ -29,11 +33,28 @@ it is → if needed, it searches its documents for relevant text → it asks the
 local AI model to answer, using that text as reference → it double-checks the
 answer's shape before showing it to you.
 
-There are three ways to use it, all powered by the same underlying engine
-(`app/chat.py`'s `ChatSession`): `cli_chat.py` (a simple terminal chat),
-`main.py` (a small hand-written FastAPI + HTML web page), and `ui.py` (a
-Streamlit chat app with a model-switcher and streamed responses — see
-Step 4 below).
+**Module map** — where to find each piece:
+- `data/knowledge_base.json` — the curated dataset (Step 3)
+- `app/embeddings.py` — loads the embedding model (Step 1)
+- `app/chunking.py` — splits documents into chunks (Step 2)
+- `app/ingest.py` — builds the Chroma vector database from the chunks
+- `app/retriever.py` — looks up the most relevant chunks for a query
+- `app/prompt_engineering.py` — all system prompts, few-shot examples, and
+  the per-category prompt styles (Step 8)
+- `app/utils.py` — query pre-processing, answer post-processing, and the
+  weather/follow-up classification helpers (Step 8)
+- `app/tools.py` — the live weather lookup, the external "action" (Step 7)
+- `app/guardrails.py` — input safety checks and structured-JSON parsing (Step 6)
+- `app/chat.py` — `ChatSession`, the engine that ties all of the above together
+- `ui.py` — **the primary front-end**: the Streamlit chat app (Step 4)
+- `main.py` — a secondary, hand-written FastAPI + HTML web page (a bonus
+  alternative front-end, kept alongside `ui.py`; not the primary UI to evaluate)
+- `cli_chat.py` — a minimal terminal chat, useful for quick manual testing
+
+All three front-ends (`ui.py`, `main.py`, `cli_chat.py`) are powered by the
+same underlying engine, `app/chat.py`'s `ChatSession` — **`ui.py` (Streamlit)
+is the one to run and evaluate** (see "Setting it up" below); the other two
+are extras.
 
 ## Step 1: Picking the AI model that reads your documents
 
@@ -451,6 +472,40 @@ uvicorn main:app --reload --port 8001   # then visit http://127.0.0.1:8001
 
 If you're using a different Ollama model, set `OLLAMA_MODEL` in the `.env`
 file to match, or just pick it from `ui.py`'s dropdown at runtime.
+
+## Example conversation
+
+Real transcript from a test run (`ui.py`, `qwen2.5:0.5b`), showing a
+multi-turn RAG exchange with a follow-up, then a live tool call:
+
+```
+You: How does the useEffect hook work in React?
+Bot: The `useEffect` hook runs side effects after render and depends on its
+     dependency array to decide when to re-run — an empty array means it
+     only runs once, after the first render.
+     [sources: react_012, react_005]
+
+You: and what about performance?
+Bot: Performance-wise:
+     1. An empty dependencies array in `useEffect` can improve performance by
+        avoiding unnecessary re-runs of the effect.
+     2. Cleaning up subscriptions/timers in the returned function prevents
+        memory leaks that would otherwise slow the app down over time.
+     [sources: react_006, javascript_022]
+
+You: Do I need an umbrella in London today?
+Bot: Current weather in London, United Kingdom: mainly clear, 21.1°C
+     (feels like 20.4°C), humidity 58%, wind 14 km/h.
+     [used_tool: true]
+```
+
+The second message ("and what about performance?") is only 5 words with no
+topic of its own — `app/utils.py`'s follow-up detection recognizes the
+"what about" cue and widens the search with the prior React question before
+retrieving, which is why it still returns React-relevant sources. The third
+message triggers the live weather tool (Step 7) even though it never says
+the word "weather" — a deterministic keyword match plus the intent
+classifier catch this kind of indirect phrasing.
 
 ## Things you can try asking
 
